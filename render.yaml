@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: ercot-dashboard
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python dash_app.py
+    envVars:
+      - key: SUPABASE_DB_URL
+        sync: false
+
+  - type: background
+    name: ercot-pipeline-worker
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python pipeline.py
+    envVars:
+      - key: SUPABASE_DB_URL
+        sync: false
+    schedule: "0 */6 * * *"  # run every 6 hours

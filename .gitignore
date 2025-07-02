@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.env/
+venv/
+ENV/
+env.bak/
+*.egg-info/
+
+# Environment variables
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code or JetBrains IDE
+.vscode/
+.idea/
+
+# Jupyter or IPython
+.ipynb_checkpoints/
+
+# Logs and cache
+*.log
+*.sqlite3
+.cache/
+*.bak
+
+# Render build artifacts (if any)
+render-build/
