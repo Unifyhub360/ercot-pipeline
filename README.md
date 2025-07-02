@@ -74,3 +74,5 @@ run_id	INT FK	Links to pipeline_run_log
 table_name	TEXT	e.g., wind_5min_actuals
 rows_inserted	INT	Number of rows added this run
 log_timestamp	TIMESTAMPTZ	Set to now()
+=======
+
