@@ -1,17 +1,34 @@
-# ... [unchanged imports] ...
-
 import requests
 import io
 import zipfile
 import os
 import time
-import pandas as pd  # ✅ Add this line
+import pandas as pd
 from sqlalchemy import text
 from dotenv import load_dotenv
 from ercot_auth import get_ercot_ropc_token
 from db import engine
 
 load_dotenv()
+
+def already_ingested(archive_id: str, report_type: str) -> bool:
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT 1 FROM archive_ingest_log WHERE archive_id = :id AND report_type = :type"),
+            {"id": archive_id, "type": report_type}
+        )
+        return result.scalar() is not None
+
+def log_ingest_status(archive_id: str, report_type: str, status: str, notes: str = None):
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO archive_ingest_log (archive_id, report_type, status, notes)
+                VALUES (:id, :type, :status, :notes)
+                ON CONFLICT (archive_id) DO NOTHING
+            """),
+            {"id": archive_id, "type": report_type, "status": status, "notes": notes}
+        )
 
 def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> pd.DataFrame:
     token = get_ercot_ropc_token()
@@ -35,11 +52,15 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
 
     records = []
     skipped = 0
-    for doc in sorted(archives, key=lambda x: x.get("postDatetime", "")):  # safer sort
+    for doc in sorted(archives, key=lambda x: x.get("postDatetime", "")):  # oldest first
+        # 🛡️ Robust archiveId fallback
         archive_id = doc.get("archiveId")
         if not archive_id:
-            print(f"⚠️ Skipping archive with missing archiveId: {doc.get('friendlyName', 'unnamed')}")
-            continue
+            fallback = doc.get("friendlyName") or doc.get("_links", {}).get("endpoint", {}).get("href")
+            if not fallback:
+                print(f"⚠️ Skipping archive—no identifier found:\n{doc}")
+                continue
+            archive_id = fallback.replace(":", "_").replace("/", "_")[:100]
 
         if already_ingested(archive_id, report_type):
             skipped += 1
