@@ -17,3 +17,4 @@ if not SUPABASE_DB_URL or "sslmode=require" not in SUPABASE_DB_URL:
 
 # 🚀 Create engine
 engine = create_engine(SUPABASE_DB_URL)
+print("🔍 DB Host in use:", SUPABASE_DB_URL.split('@')[1].split(':')[0])
