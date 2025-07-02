@@ -1,20 +1,41 @@
 # ercot_api.py
+
 import requests
 import io
 import zipfile
 import pandas as pd
 import os
 import time
+from sqlalchemy import text
 from dotenv import load_dotenv
 from ercot_auth import get_ercot_ropc_token
+from db import engine
 
 load_dotenv()
 
-def get_recent_archives_df(report_id: str, num_archives: int = 24) -> pd.DataFrame:
-    """
-    Downloads and loads multiple ERCOT archives with caching and format detection.
-    Archives may be CSV or ZIP (auto-handled).
-    """
+
+def already_ingested(archive_id: str, report_type: str) -> bool:
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT 1 FROM archive_ingest_log WHERE archive_id = :id AND report_type = :type"),
+            {"id": archive_id, "type": report_type}
+        )
+        return result.scalar() is not None
+
+
+def log_ingest_status(archive_id: str, report_type: str, status: str, notes: str = None):
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO archive_ingest_log (archive_id, report_type, status, notes)
+                VALUES (:id, :type, :status, :notes)
+                ON CONFLICT (archive_id) DO NOTHING
+            """),
+            {"id": archive_id, "type": report_type, "status": status, "notes": notes}
+        )
+
+
+def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> pd.DataFrame:
     token = get_ercot_ropc_token()
     headers = {
         "Authorization": f"Bearer {token}",
@@ -35,7 +56,13 @@ def get_recent_archives_df(report_id: str, num_archives: int = 24) -> pd.DataFra
         raise ValueError(f"No archives found for {report_id}")
 
     records = []
-    for doc in archives[:num_archives]:
+    skipped = 0
+    for doc in sorted(archives, key=lambda x: x["postDatetime"]):  # oldest first
+        archive_id = doc["archiveId"]
+        if already_ingested(archive_id, report_type):
+            skipped += 1
+            continue
+
         download_url = doc["_links"]["endpoint"]["href"]
         filename_hint = doc.get("friendlyName", f"{report_id}_{doc['postDatetime']}")
         safe_name = filename_hint.replace(":", "-").replace("/", "-") + ".bin"
@@ -44,40 +71,46 @@ def get_recent_archives_df(report_id: str, num_archives: int = 24) -> pd.DataFra
         cache_path = os.path.join(cache_dir, safe_name)
 
         # === Load from cache or download ===
-        if os.path.exists(cache_path):
-            print(f"📂 Loading from cache: {safe_name}")
-            with open(cache_path, "rb") as f:
-                content = f.read()
-        else:
-            print(f"🔽 Downloading: {filename_hint} at {doc['postDatetime']}")
-            try:
-                time.sleep(2)  # ⏱️ avoid 429 errors
+        try:
+            if os.path.exists(cache_path):
+                print(f"📂 Loading from cache: {safe_name}")
+                with open(cache_path, "rb") as f:
+                    content = f.read()
+            else:
+                print(f"🔽 Downloading: {filename_hint} at {doc['postDatetime']}")
+                time.sleep(2)
                 resp = requests.get(download_url, headers=headers)
                 resp.raise_for_status()
                 content = resp.content
                 with open(cache_path, "wb") as f:
                     f.write(content)
                 print(f"💾 Cached to {cache_path}")
-            except Exception as e:
-                print(f"⚠️ Skipping archive due to download error: {e}")
-                continue
+        except Exception as e:
+            print(f"⚠️ Skipping archive due to download error: {e}")
+            log_ingest_status(archive_id, report_type, "error", str(e))
+            continue
 
         # === Parse ZIP or plain CSV ===
         try:
-            with zipfile.ZipFile(io.BytesIO(content)) as z:
-                csv_file = z.namelist()[0]
-                with z.open(csv_file) as f:
-                    df = pd.read_csv(f)
-                    records.append(df)
-                    continue
-        except zipfile.BadZipFile:
             try:
+                with zipfile.ZipFile(io.BytesIO(content)) as z:
+                    csv_file = z.namelist()[0]
+                    with z.open(csv_file) as f:
+                        df = pd.read_csv(f)
+            except zipfile.BadZipFile:
                 df = pd.read_csv(io.BytesIO(content))
-                records.append(df)
-            except Exception as e:
-                print(f"⚠️ Failed to parse archive {safe_name}: {e}")
-                continue
 
+            records.append(df)
+            log_ingest_status(archive_id, report_type, "success")
+        except Exception as e:
+            print(f"⚠️ Failed to parse archive {safe_name}: {e}")
+            log_ingest_status(archive_id, report_type, "error", str(e))
+            continue
+
+        if max_files and len(records) >= max_files:
+            break
+
+    print(f"✅ Processed: {len(records)}, Skipped: {skipped}, Total: {len(archives)}")
     if not records:
         raise RuntimeError(f"❌ No valid archives processed for {report_id}")
 
