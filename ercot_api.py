@@ -1,5 +1,18 @@
 # ... [unchanged imports] ...
 
+import requests
+import io
+import zipfile
+import os
+import time
+import pandas as pd  # ✅ Add this line
+from sqlalchemy import text
+from dotenv import load_dotenv
+from ercot_auth import get_ercot_ropc_token
+from db import engine
+
+load_dotenv()
+
 def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> pd.DataFrame:
     token = get_ercot_ropc_token()
     headers = {
