@@ -52,13 +52,13 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
 
     records = []
     skipped = 0
-    for doc in sorted(archives, key=lambda x: x.get("postDatetime", "")):  # oldest first
-        # 🛡️ Robust archiveId fallback
+
+    for doc in sorted(archives, key=lambda x: x.get("postDatetime", "")):
         archive_id = doc.get("archiveId")
         if not archive_id:
             fallback = doc.get("friendlyName") or doc.get("_links", {}).get("endpoint", {}).get("href")
             if not fallback:
-                print(f"⚠️ Skipping archive—no identifier found:\n{doc}")
+                print(f"⚠️ Skipping archive — missing both archiveId and fallback:\n{doc}")
                 continue
             archive_id = fallback.replace(":", "_").replace("/", "_")[:100]
 
@@ -70,7 +70,7 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
             download_url = doc["_links"]["endpoint"]["href"]
         except KeyError:
             print(f"⚠️ Skipping {archive_id} due to missing download URL")
-            log_ingest_status(archive_id, report_type, "error", "missing endpoint href")
+            log_ingest_status(archive_id, report_type, "error", "missing endpoint")
             continue
 
         filename_hint = doc.get("friendlyName", f"{report_id}_{doc.get('postDatetime', archive_id)}")
@@ -103,8 +103,9 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
         try:
             try:
                 with zipfile.ZipFile(io.BytesIO(content)) as z:
-                    csv_file = z.namelist()[0]
-                    with z.open(csv_file) as f:
+                    csv_files = z.namelist()
+                    print(f"🗂️ ZIP for {archive_id} contains: {csv_files}")
+                    with z.open(csv_files[0]) as f:
                         df = pd.read_csv(f)
             except zipfile.BadZipFile:
                 df = pd.read_csv(io.BytesIO(content))
