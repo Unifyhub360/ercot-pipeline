@@ -54,13 +54,17 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
     skipped = 0
 
     for doc in sorted(archives, key=lambda x: x.get("postDatetime", "")):
+        # Normalize or generate archive_id
         archive_id = doc.get("archiveId")
         if not archive_id:
             fallback = doc.get("friendlyName") or doc.get("_links", {}).get("endpoint", {}).get("href")
             if not fallback:
                 print(f"⚠️ Skipping archive — missing both archiveId and fallback:\n{doc}")
                 continue
-            archive_id = fallback.replace(":", "_").replace("/", "_")[:100]
+            archive_id = fallback.replace(":", "_").replace("/", "_").replace("-", "_")
+            archive_id = archive_id.split(".")[0][:100]  # Strip .csv or .zip
+
+        print(f"🪪 Normalized archive_id: {archive_id}")
 
         if already_ingested(archive_id, report_type):
             skipped += 1
@@ -99,29 +103,4 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
             log_ingest_status(archive_id, report_type, "error", str(e))
             continue
 
-        # === Parse ZIP or plain CSV ===
-        try:
-            try:
-                with zipfile.ZipFile(io.BytesIO(content)) as z:
-                    csv_files = z.namelist()
-                    print(f"🗂️ ZIP for {archive_id} contains: {csv_files}")
-                    with z.open(csv_files[0]) as f:
-                        df = pd.read_csv(f)
-            except zipfile.BadZipFile:
-                df = pd.read_csv(io.BytesIO(content))
-
-            records.append(df)
-            log_ingest_status(archive_id, report_type, "success")
-        except Exception as e:
-            print(f"⚠️ Failed to parse archive {safe_name}: {e}")
-            log_ingest_status(archive_id, report_type, "error", str(e))
-            continue
-
-        if max_files and len(records) >= max_files:
-            break
-
-    print(f"✅ Processed: {len(records)}, Skipped: {skipped}, Total: {len(archives)}")
-    if not records:
-        raise RuntimeError(f"❌ No valid archives processed for {report_id}")
-
-    return pd.concat(records, ignore_index=True)
+        # === Parse ZIP
