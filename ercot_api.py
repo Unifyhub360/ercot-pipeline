@@ -1,39 +1,4 @@
-# ercot_api.py
-
-import requests
-import io
-import zipfile
-import pandas as pd
-import os
-import time
-from sqlalchemy import text
-from dotenv import load_dotenv
-from ercot_auth import get_ercot_ropc_token
-from db import engine
-
-load_dotenv()
-
-
-def already_ingested(archive_id: str, report_type: str) -> bool:
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT 1 FROM archive_ingest_log WHERE archive_id = :id AND report_type = :type"),
-            {"id": archive_id, "type": report_type}
-        )
-        return result.scalar() is not None
-
-
-def log_ingest_status(archive_id: str, report_type: str, status: str, notes: str = None):
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-                INSERT INTO archive_ingest_log (archive_id, report_type, status, notes)
-                VALUES (:id, :type, :status, :notes)
-                ON CONFLICT (archive_id) DO NOTHING
-            """),
-            {"id": archive_id, "type": report_type, "status": status, "notes": notes}
-        )
-
+# ... [unchanged imports] ...
 
 def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> pd.DataFrame:
     token = get_ercot_ropc_token()
@@ -57,14 +22,24 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
 
     records = []
     skipped = 0
-    for doc in sorted(archives, key=lambda x: x["postDatetime"]):  # oldest first
-        archive_id = doc["archiveId"]
+    for doc in sorted(archives, key=lambda x: x.get("postDatetime", "")):  # safer sort
+        archive_id = doc.get("archiveId")
+        if not archive_id:
+            print(f"⚠️ Skipping archive with missing archiveId: {doc.get('friendlyName', 'unnamed')}")
+            continue
+
         if already_ingested(archive_id, report_type):
             skipped += 1
             continue
 
-        download_url = doc["_links"]["endpoint"]["href"]
-        filename_hint = doc.get("friendlyName", f"{report_id}_{doc['postDatetime']}")
+        try:
+            download_url = doc["_links"]["endpoint"]["href"]
+        except KeyError:
+            print(f"⚠️ Skipping {archive_id} due to missing download URL")
+            log_ingest_status(archive_id, report_type, "error", "missing endpoint href")
+            continue
+
+        filename_hint = doc.get("friendlyName", f"{report_id}_{doc.get('postDatetime', archive_id)}")
         safe_name = filename_hint.replace(":", "-").replace("/", "-") + ".bin"
         cache_dir = f"cache/{report_id}"
         os.makedirs(cache_dir, exist_ok=True)
@@ -77,7 +52,7 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
                 with open(cache_path, "rb") as f:
                     content = f.read()
             else:
-                print(f"🔽 Downloading: {filename_hint} at {doc['postDatetime']}")
+                print(f"🔽 Downloading: {filename_hint}")
                 time.sleep(2)
                 resp = requests.get(download_url, headers=headers)
                 resp.raise_for_status()
