@@ -4,10 +4,12 @@ import zipfile
 import os
 import time
 import pandas as pd
+import hashlib
 from sqlalchemy import text
 from dotenv import load_dotenv
 from ercot_auth import get_ercot_ropc_token
 from db import engine
+from collections import Counter
 
 load_dotenv()
 
@@ -52,9 +54,9 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
 
     records = []
     skipped = 0
+    checksum_tracker = Counter()
 
     for doc in sorted(archives, key=lambda x: x.get("postDatetime", "")):
-        # Normalize or generate archive_id
         archive_id = doc.get("archiveId")
         if not archive_id:
             fallback = doc.get("friendlyName") or doc.get("_links", {}).get("endpoint", {}).get("href")
@@ -62,7 +64,7 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
                 print(f"⚠️ Skipping archive — missing both archiveId and fallback:\n{doc}")
                 continue
             archive_id = fallback.replace(":", "_").replace("/", "_").replace("-", "_")
-            archive_id = archive_id.split(".")[0][:100]  # Strip .csv or .zip
+            archive_id = archive_id.split(".")[0][:100]
 
         print(f"🪪 Normalized archive_id: {archive_id}")
 
@@ -83,7 +85,6 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
         os.makedirs(cache_dir, exist_ok=True)
         cache_path = os.path.join(cache_dir, safe_name)
 
-        # === Load from cache or download ===
         try:
             if os.path.exists(cache_path):
                 print(f"📂 Loading from cache: {safe_name}")
@@ -103,4 +104,40 @@ def get_archives_df(report_id: str, report_type: str, max_files: int = None) -> 
             log_ingest_status(archive_id, report_type, "error", str(e))
             continue
 
-        # === Parse ZIP
+        # === Hash check
+        zip_checksum = hashlib.sha256(content).hexdigest()
+        checksum_tracker[zip_checksum] += 1
+        print(f"🔐 SHA256 for {archive_id}: {zip_checksum}")
+
+        # === Parse ZIP or plain CSV
+        try:
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as z:
+                    csv_files = z.namelist()
+                    print(f"🗂️ ZIP for {archive_id} contains: {csv_files}")
+                    with z.open(csv_files[0]) as f:
+                        df = pd.read_csv(f)
+            except zipfile.BadZipFile:
+                df = pd.read_csv(io.BytesIO(content))
+
+            records.append(df)
+            log_ingest_status(archive_id, report_type, "success")
+        except Exception as e:
+            print(f"⚠️ Failed to parse archive {safe_name}: {e}")
+            log_ingest_status(archive_id, report_type, "error", str(e))
+            continue
+
+        if max_files and len(records) >= max_files:
+            break
+
+    # Report duplicate files if any
+    print("\n🧮 ZIP checksums summary:")
+    for checksum, count in checksum_tracker.items():
+        if count > 1:
+            print(f"⚠️ Duplicate ZIP detected: {checksum} occurred {count} times")
+
+    print(f"\n✅ Processed: {len(records)}, Skipped: {skipped}, Total Archives: {len(archives)}")
+    if not records:
+        raise RuntimeError(f"❌ No valid archives processed for {report_id}")
+
+    return pd.concat(records, ignore_index=True)
